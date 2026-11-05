@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="SmartPalm.FieldService.API/SmartPalm.FieldService.API.csproj" />
+  <Project Path="SmartPalm.FieldService.API.Tests/SmartPalm.FieldService.API.Tests.csproj" />
+</Solution>
+

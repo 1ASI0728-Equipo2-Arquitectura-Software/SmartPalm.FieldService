@@ -1,0 +1,29 @@
+name: smartpalm-field
+services:
+  database:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${FIELD_DB_NAME:-smartpalm_field}
+      POSTGRES_USER: ${FIELD_DB_USER:-smartpalm}
+      POSTGRES_PASSWORD: ${FIELD_DB_PASSWORD:-smartpalm}
+    ports: ["${FIELD_DB_PORT:-5439}:5432"]
+    healthcheck: { test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"], interval: 5s, timeout: 3s, retries: 15 }
+    volumes: [field-db:/var/lib/postgresql/data]
+  rabbitmq:
+    image: rabbitmq:4-management-alpine
+    profiles: [messaging]
+    ports: ["${RABBITMQ_PORT:-5672}:5672", "${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"]
+  api:
+    build: .
+    profiles: [api]
+    depends_on: { database: { condition: service_healthy } }
+    environment:
+      ASPNETCORE_URLS: http://+:8080
+      ConnectionStrings__FieldDatabase: Host=database;Port=5432;Database=${FIELD_DB_NAME:-smartpalm_field};Username=${FIELD_DB_USER:-smartpalm};Password=${FIELD_DB_PASSWORD:-smartpalm}
+      Jwt__Key: ${JWT_KEY:-SmartPalm-Local-Development-Key-Change-Me-2026}
+      Jwt__Issuer: smartpalm.identity
+      Jwt__Audience: smartpalm.clients
+      RabbitMq__Enabled: ${RABBITMQ_ENABLED:-false}
+      RabbitMq__Uri: ${RABBITMQ_URI:-amqp://guest:guest@rabbitmq:5672/}
+    ports: ["${FIELD_API_PORT:-5107}:8080"]
+volumes: { field-db: {} }

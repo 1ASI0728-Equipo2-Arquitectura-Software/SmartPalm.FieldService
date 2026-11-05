@@ -1,0 +1,3 @@
+namespace SmartPalm.FieldService.Domain.Model.Events;
+
+public record UserCreatedIntegrationEvent(int UserId, string Username, string Email, string FullName, string Role, DateTime OccurredAtUtc);
