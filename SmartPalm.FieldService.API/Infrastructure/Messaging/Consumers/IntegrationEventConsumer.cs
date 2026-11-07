@@ -9,7 +9,7 @@ namespace SmartPalm.FieldService.Infrastructure.Messaging;
 internal class IntegrationEventConsumer(IServiceScopeFactory scopes, IOptions<RabbitMqOptions> options, ILogger<IntegrationEventConsumer> logger) : BackgroundService
 {
     private readonly RabbitMqOptions _options = options.Value;
-    private static readonly string[] Keys = ["smartpalm.identity.user-created.v1", "smartpalm.identity.subscription-created.v1", "smartpalm.identity.subscription-activated.v1", "smartpalm.identity.subscription-cancelled.v1", "crop.plantation-created.v1", "crop.sector-assigned.v1", "crop.sector-removed.v1", "crop.agronomist-affiliated.v1", "crop.agronomist-detached.v1", "alert.triggered.v1", "alert.acknowledged.v1", "agronomy.recommendation-published.v1"];
+    private static readonly string[] Keys = ["smartpalm.identity.user-created.v1", "smartpalm.identity.subscription-created.v1", "smartpalm.identity.subscription-activated.v1", "smartpalm.identity.subscription-cancelled.v1", "crop.plantation-created.v1", "crop.sector-assigned.v1", "crop.sector-removed.v1", "crop.agronomist-affiliated.v1", "crop.agronomist-detached.v1", "alert.triggered.v1", "alert.acknowledged.v1", "agronomy.recommendation-published.v1", "smartpalm.identity.user-deletion-requested.v1"];
     protected override async Task ExecuteAsync(CancellationToken token)
     {
         if (!_options.Enabled) return;
@@ -41,6 +41,8 @@ internal class IntegrationEventConsumer(IServiceScopeFactory scopes, IOptions<Ra
                     case "alert.triggered.v1": await handlers.HandleAsync(id, Read<AlertTriggeredIntegrationEvent>(body), token); break;
                     case "alert.acknowledged.v1": await handlers.HandleAsync(id, Read<AlertAcknowledgedIntegrationEvent>(body), token); break;
                     case "agronomy.recommendation-published.v1": await handlers.HandleAsync(id, Read<RecommendationPublishedIntegrationEvent>(body), token); break;
+                    case "smartpalm.identity.user-deletion-requested.v1": await handlers.HandleAsync(
+                        ReadPayload<UserDeletionRequestedIntegrationEvent>(body), token); break;
                 }
                 await channel.BasicAckAsync(args.DeliveryTag, false, token);
             }
@@ -49,4 +51,10 @@ internal class IntegrationEventConsumer(IServiceScopeFactory scopes, IOptions<Ra
         await channel.BasicConsumeAsync(_options.Queue, false, consumer, token); await Task.Delay(Timeout.InfiniteTimeSpan, token);
     }
     private static T Read<T>(byte[] body) => JsonSerializer.Deserialize<T>(body, new JsonSerializerOptions(JsonSerializerDefaults.Web)) ?? throw new JsonException($"Invalid {typeof(T).Name} payload.");
+    private static T ReadPayload<T>(byte[] body)
+    {
+        using var document = JsonDocument.Parse(body);
+        var payload = document.RootElement.TryGetProperty("payload", out var value) ? value : document.RootElement;
+        return payload.Deserialize<T>(new JsonSerializerOptions(JsonSerializerDefaults.Web)) ?? throw new JsonException($"Invalid {typeof(T).Name} payload.");
+    }
 }
