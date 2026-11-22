@@ -13,17 +13,25 @@ services:
     image: rabbitmq:4-management-alpine
     profiles: [messaging]
     ports: ["${RABBITMQ_PORT:-5672}:5672", "${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"]
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
   api:
     build: .
     profiles: [api]
     depends_on: { database: { condition: service_healthy } }
     environment:
+      ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT:-Development}
       ASPNETCORE_URLS: http://+:8080
       ConnectionStrings__FieldDatabase: Host=database;Port=5432;Database=${FIELD_DB_NAME:-smartpalm_field};Username=${FIELD_DB_USER:-smartpalm};Password=${FIELD_DB_PASSWORD:-smartpalm}
-      Jwt__Key: ${JWT_KEY:-SmartPalm-Local-Development-Key-Change-Me-2026}
-      Jwt__Issuer: smartpalm.identity
-      Jwt__Audience: smartpalm.clients
-      RabbitMq__Enabled: ${RABBITMQ_ENABLED:-false}
-      RabbitMq__Uri: ${RABBITMQ_URI:-amqp://guest:guest@rabbitmq:5672/}
+      Jwt__Key: ${Jwt__Key:-replace-with-at-least-32-random-characters}
+      Jwt__Issuer: ${Jwt__Issuer:-smartpalm.identity}
+      Jwt__Audience: ${Jwt__Audience:-smartpalm.clients}
+      RabbitMq__Enabled: ${RabbitMq__Enabled:-false}
+      RabbitMq__Uri: ${RabbitMq__Uri:-amqp://guest:guest@rabbitmq:5672/}
+      RabbitMq__Exchange: ${RabbitMq__Exchange:-smartpalm.events}
+      RabbitMq__Queue: ${RabbitMq__Queue:-smartpalm.field}
     ports: ["${FIELD_API_PORT:-5107}:8080"]
 volumes: { field-db: {} }

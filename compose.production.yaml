@@ -1,0 +1,25 @@
+name: smartpalm-field-production
+
+services:
+  api:
+    build: .
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_URLS: http://+:8080
+      ConnectionStrings__FieldDatabase: Host=${FIELD_DB_HOST:-10.6.96.4};Port=${FIELD_DB_PORT:-5432};Database=${FIELD_DB_NAME:-smartpalm_field};Username=${FIELD_DB_USER:-smartpalm_field};Password=${FIELD_DB_PASSWORD}
+      Jwt__Key: ${Jwt__Key}
+      Jwt__Issuer: ${Jwt__Issuer:-smartpalm.identity}
+      Jwt__Audience: ${Jwt__Audience:-smartpalm.clients}
+      RabbitMq__Enabled: ${RabbitMq__Enabled:-true}
+      RabbitMq__Uri: ${RabbitMq__Uri}
+      RabbitMq__Exchange: ${RabbitMq__Exchange:-smartpalm.events}
+      RabbitMq__Queue: ${RabbitMq__Queue:-smartpalm.field}
+    expose:
+      - "8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail --silent --show-error http://localhost:8080/health/ready || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
