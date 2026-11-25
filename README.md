@@ -40,3 +40,31 @@ dotnet restore SmartPalm.FieldService.slnx
 dotnet build SmartPalm.FieldService.slnx --no-restore
 dotnet test SmartPalm.FieldService.slnx --no-build
 ```
+
+## Despliegue en Coolify/Vultr
+
+El microservicio usa PostgreSQL y RabbitMQ externos. PostgreSQL y RabbitMQ no deben quedar dentro de este compose de producción; ambos servicios deben ser accesibles desde la instancia de Vultr donde se ejecuta Coolify.
+
+En Coolify, crear el recurso desde el repositorio usando **Dockerfile** como Build Pack y configurar estas variables de ejecución:
+
+```text
+ASPNETCORE_ENVIRONMENT=Production
+ASPNETCORE_URLS=http://+:8080
+ConnectionStrings__FieldDatabase=Host=<ip_privada_postgresql>;Port=5432;Database=smartpalm_field;Username=<usuario_field>;Password=<secreto>
+Jwt__Key=<clave compartida de al menos 32 caracteres>
+Jwt__Issuer=smartpalm.identity
+Jwt__Audience=smartpalm.clients
+RabbitMq__Enabled=true
+RabbitMq__Uri=amqp://<usuario>:<password>@<ip_privada_rabbitmq>:5672/
+RabbitMq__Exchange=smartpalm.events
+RabbitMq__Queue=smartpalm.field
+```
+
+Publicar la aplicación en el puerto interno `8080` y usar `/health/live` y `/health/ready` como health checks. No publicar el contenedor de Field directamente al público: el tráfico debe entrar por el API Gateway.
+
+Como alternativa para una distribución Docker Compose, revisar `compose.production.yaml` y proporcionar los secretos desde `.env` o desde las variables de ejecución de la plataforma:
+
+```powershell
+docker compose --env-file .env -f compose.production.yaml config
+docker compose --env-file .env -f compose.production.yaml up -d
+```
