@@ -15,6 +15,10 @@ public class FieldAuthorizationService(IFieldProjectionRepository projections, F
         var user = await projections.FindUserAsync(userId, token); policy.EnsureActiveFieldUser(user);
         var plantation = await projections.FindPlantationAsync(plantationId, token);
         var owns = plantation?.PalmGrowerId == userId; var affiliated = await projections.HasAffiliationAsync(userId, plantationId, token);
-        var admin = string.Equals(user?.Role, "Administrator", StringComparison.OrdinalIgnoreCase); policy.EnsurePlantationAccess(plantation, owns || affiliated || admin);
+        var admin = string.Equals(user?.Role, "Administrator", StringComparison.OrdinalIgnoreCase);
+        var agronomist = string.Equals(user?.Role, "Agronomist", StringComparison.OrdinalIgnoreCase);
+        var grower = string.Equals(user?.Role, "PalmGrower", StringComparison.OrdinalIgnoreCase);
+        if (!admin && !agronomist && !grower) throw new UnauthorizedAccessException("Field user role is required.");
+        policy.EnsurePlantationAccess(plantation, admin || affiliated || (grower && owns));
     }
 }
