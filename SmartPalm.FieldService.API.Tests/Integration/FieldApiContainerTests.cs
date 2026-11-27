@@ -61,6 +61,12 @@ public class FieldApiContainerTests : IAsyncLifetime
         Assert.Equal(HttpStatusCode.Created, intervention.StatusCode);
         var interventionId = (await intervention.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetInt64();
         Assert.Equal(HttpStatusCode.OK, (await client.PatchAsJsonAsync($"/api/v1/field/interventions/{interventionId}/verify", new { agronomistId = 77, notes = "Verified" })).StatusCode);
+        var before = await ScalarAsync("SELECT COUNT(*) FROM field.agronomic_interventions");
+        var outboxBefore = await ScalarAsync("SELECT COUNT(*) FROM field.outbox_messages");
+        var spoof = await client.PostAsJsonAsync("/api/v1/field/interventions", new { plantationId = 11, sectorId = 99, registeredBy = 88, performedBy = "Worker", type = "Other", description = "Spoof", executionDate = now });
+        Assert.Equal(HttpStatusCode.Forbidden, spoof.StatusCode);
+        Assert.Equal(before, await ScalarAsync("SELECT COUNT(*) FROM field.agronomic_interventions"));
+        Assert.Equal(outboxBefore, await ScalarAsync("SELECT COUNT(*) FROM field.outbox_messages"));
 
         await PublishAsync("smartpalm.identity.user-created.v1", new { userId = 79, role = "Agronomist", occurredAtUtc = now }, "SELECT COUNT(*) FROM field.user_projections WHERE user_id = 79");
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", Token(79, "Agronomist"));
@@ -73,6 +79,7 @@ public class FieldApiContainerTests : IAsyncLifetime
         Assert.Equal(HttpStatusCode.Conflict, (await client.PostAsJsonAsync("/api/v1/field/interventions", growerRequest)).StatusCode);
         await PublishAsync("smartpalm.identity.subscription-activated.v1", new { subscriptionId = 1, userId = 12, planType = "Standard", startDate = now, endDate = now.AddDays(30), occurredAtUtc = now }, "SELECT COUNT(*) FROM field.user_projections WHERE user_id = 12 AND has_active_subscription");
         Assert.Equal(HttpStatusCode.Created, (await client.PostAsJsonAsync("/api/v1/field/interventions", growerRequest)).StatusCode);
+        Assert.Equal(HttpStatusCode.Created, (await client.PostAsJsonAsync("/api/v1/sectors/99/interventions", new { description = "Legacy sector treatment", performedBy = "Worker", executionDate = now })).StatusCode);
 
         Assert.Equal(1, await ScalarAsync("SELECT COUNT(*) FROM field.user_projections WHERE user_id = 78 AND NOT has_active_subscription"));
         Assert.Equal(0, await ScalarAsync("SELECT COUNT(*) FROM field.agronomist_affiliation_projections WHERE agronomist_id = 78 AND plantation_id = 11 AND active"));

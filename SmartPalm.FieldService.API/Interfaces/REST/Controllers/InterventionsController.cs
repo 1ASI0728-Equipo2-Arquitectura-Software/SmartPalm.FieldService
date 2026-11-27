@@ -14,6 +14,10 @@ public class InterventionsController(IInterventionCommandService commands, IInte
     [HttpPost("v1/field/interventions")]
     public async Task<IActionResult> RegisterIntervention(RegisterFieldInterventionResource r, CancellationToken t)
     {
+        var subject = User.FindFirst("sub")?.Value ?? User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
+        if (!long.TryParse(subject, out var callerId)) throw new UnauthorizedAccessException("JWT subject is required.");
+        var administrator = User.IsInRole("Administrator") || User.HasClaim(System.Security.Claims.ClaimTypes.Role, "Administrator");
+        if (r.registeredBy != callerId && !administrator) return Forbid();
         var x = await commands.HandleAsync(new RegisterInterventionCommand(
             r.plantationId, 
             r.sectorId, 
@@ -35,7 +39,8 @@ public class InterventionsController(IInterventionCommandService commands, IInte
     {
         var sector = await projections.FindSectorAsync(sectorId, t) 
                      ?? throw new ArgumentException("Sector does not exist in the local projection."); 
-        var registeredBy = long.TryParse(User.FindFirst("sub")?.Value, out var userId) 
+        var subject = User.FindFirst("sub")?.Value ?? User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
+        var registeredBy = long.TryParse(subject, out var userId) 
             ? userId : throw new UnauthorizedAccessException("JWT subject is required."); 
         var x = await commands.HandleAsync(new RegisterInterventionCommand(sector.PlantationId, 
             sectorId, registeredBy, r.performedBy, Domain.Model.ValueObjects.InterventionType.Other, r.description, r.originRecommendationId, null, r.executionDate), t); 
