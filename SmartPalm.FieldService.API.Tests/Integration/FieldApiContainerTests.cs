@@ -18,7 +18,7 @@ public class FieldApiContainerTests : IAsyncLifetime
     {
         using var factory = CreateFactory(); using var client = factory.CreateClient(); Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/health/ready")).StatusCode);
         await using var connection = await new ConnectionFactory { Uri = new Uri(_rabbit.GetConnectionString()) }.CreateConnectionAsync(); await using var channel = await connection.CreateChannelAsync(); await channel.ExchangeDeclareAsync("smartpalm.events", ExchangeType.Topic, true, false);
-        var id = Guid.NewGuid(); var body = JsonSerializer.SerializeToUtf8Bytes(new { userId = 77, username = "field-user", email = "field@test.local", fullName = "Field User", role = "Agronomist", occurredAtUtc = DateTime.UtcNow }, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        var id = Guid.NewGuid(); var body = JsonSerializer.SerializeToUtf8Bytes(new { eventId = id, eventType = "smartpalm.identity.user-created.v1", payload = new { userId = 77, username = "field-user", email = "field@test.local", fullName = "Field User", role = "Agronomist", occurredAtUtc = DateTime.UtcNow } }, new JsonSerializerOptions(JsonSerializerDefaults.Web));
         for (var attempt = 0; attempt < 20; attempt++) { await channel.BasicPublishAsync("smartpalm.events", "smartpalm.identity.user-created.v1", false, new BasicProperties { Persistent = true, MessageId = id.ToString(), Type = "smartpalm.identity.user-created.v1" }, body); await Task.Delay(300); if (await ScalarAsync("SELECT COUNT(*) FROM field.inbox_messages") == 1) break; }
         Assert.Equal(1, await ScalarAsync("SELECT COUNT(*) FROM field.user_projections WHERE user_id = 77")); Assert.Equal(1, await ScalarAsync("SELECT COUNT(*) FROM field.inbox_messages"));
 
