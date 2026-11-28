@@ -21,6 +21,14 @@ public static class DependencyInjection
         services.AddScoped<IIntegrationEventWriter, IntegrationEventWriter>(); services.AddScoped<IInbox, Inbox>(); services.AddScoped<IntegrationEventHandlers>();
         services.AddScoped<FieldAuthorizationService>(); services.AddSingleton<FieldAccessPolicy>(); services.AddSingleton<InterventionTraceabilityService>();
         services.AddScoped<IFieldVisitCommandService, FieldVisitCommandService>(); services.AddScoped<IFieldVisitQueryService, FieldVisitQueryService>(); services.AddScoped<IFieldInspectionCommandService, FieldInspectionCommandService>(); services.AddScoped<IFieldInspectionQueryService, FieldInspectionQueryService>(); services.AddScoped<IInterventionCommandService, InterventionCommandService>(); services.AddScoped<IInterventionQueryService, InterventionQueryService>();
+        services.AddHttpContextAccessor();
+        services.AddScoped<ISoilMoistureReader, IngestionSoilMoistureReader>();
+        services.AddHttpClient(IngestionSoilMoistureReader.ClientName, client =>
+        {
+            client.Timeout = TimeSpan.FromSeconds(5);
+            client.MaxResponseContentBufferSize = 4 * 1024 * 1024;
+        }).ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false })
+          .RedactLoggedHeaders(_ => true);
         services.AddScoped<IReportDraftEvidenceRepository, ReportDraftEvidenceRepository>();
         services.AddScoped<ReportDraftService>();
         services.AddScoped<IReportDraftProvider, MiniMaxReportDraftProvider>();
