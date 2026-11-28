@@ -3,6 +3,7 @@ using System.Security.Claims;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Configuration;
 using SmartPalm.FieldService.Infrastructure.ExternalServices;
+using SmartPalm.FieldService.Application.Ports;
 
 namespace SmartPalm.FieldService.API.Tests.Domain;
 
@@ -20,6 +21,7 @@ public class IngestionSoilMoistureReaderTests
         Assert.True(result.IsAvailable);
         Assert.Equal(2, result.Samples.Count);
         Assert.Equal(0m, result.Samples[0].Value);
+        Assert.Equal(new SoilMoistureInstrument("EDGE", "DEVICE"), result.Samples[0].Instrument);
         Assert.Equal(To, result.Samples[1].MeasuredAt);
         Assert.Equal(HttpMethod.Get, handler.Request!.Method);
         Assert.Equal("Bearer caller.jwt.token", handler.Request.Headers.Authorization!.ToString());
@@ -93,6 +95,78 @@ public class IngestionSoilMoistureReaderTests
         Assert.False((await Reader(handler).GetAsync(1, 2, From, To, default)).IsAvailable);
         using var cts = new CancellationTokenSource(); cts.Cancel();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => Reader(handler).GetAsync(1, 2, From, To, cts.Token));
+    }
+
+    private static readonly SoilMoistureInstrument Instrument = new("E3:SP:80:34:01:01", "E3:SP:80:34:02:01");
+    private const string Threshold = "{\"edgeMac\":\"E3:SP:80:34:01:01\",\"iotMac\":\"E3:SP:80:34:02:01\",\"min\":0,\"max\":100,\"description\":\"ignored\",\"type\":\"SoilMoisture\"}";
+
+    [Fact]
+    public async Task ThresholdUsesSameInstrumentAndCaller()
+    {
+        var handler = new Handler(_ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("[" + Threshold.ToLowerInvariant().Replace("soilmoisture", "SoilMoisture") + "]") });
+        var result = await Reader(handler).GetThresholdAsync(Instrument, default);
+        Assert.Equal(new SoilMoistureThresholdResult(SoilMoistureThresholdStatus.Configured, 0, 100), result);
+        Assert.Equal(HttpMethod.Get, handler.Request!.Method);
+        Assert.Equal("Bearer caller.jwt.token", handler.Request.Headers.Authorization!.ToString());
+        Assert.Equal("https://ingestion.test/api/v1/devices/" + Uri.EscapeDataString(Instrument.IotMac) + "/thresholds", handler.Request.RequestUri!.AbsoluteUri);
+        var equal = await Reader(new Handler(_ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("[" + Threshold.Replace("\"min\":0,\"max\":100", "\"min\":100,\"max\":100") + "]") })).GetThresholdAsync(Instrument, default);
+        Assert.Equal(new SoilMoistureThresholdResult(SoilMoistureThresholdStatus.Configured, 100, 100), equal);
+        var zero = await Reader(new Handler(_ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("[" + Threshold.Replace("\"max\":100", "\"max\":0") + "," + Threshold.Replace("SoilMoisture", "Temperature").Replace("\"min\":0", "\"min\":\"ignored\"") + "]") })).GetThresholdAsync(Instrument, default);
+        Assert.Equal(new SoilMoistureThresholdResult(SoilMoistureThresholdStatus.Configured, 0, 0), zero);
+    }
+
+    [Fact]
+    public async Task ThresholdClassifiesResponsesWithoutLeakingBounds()
+    {
+        var cases = new (HttpStatusCode Status, string Body, SoilMoistureThresholdStatus Expected)[] {
+            (HttpStatusCode.NotFound, "", SoilMoistureThresholdStatus.Missing),
+            (HttpStatusCode.OK, "[]", SoilMoistureThresholdStatus.Missing),
+            (HttpStatusCode.OK, "[" + Threshold.Replace("SoilMoisture", "Temperature") + "]", SoilMoistureThresholdStatus.Missing),
+            (HttpStatusCode.Unauthorized, "", SoilMoistureThresholdStatus.Denied),
+            (HttpStatusCode.Forbidden, "", SoilMoistureThresholdStatus.Denied),
+            (HttpStatusCode.InternalServerError, "", SoilMoistureThresholdStatus.Unavailable),
+            (HttpStatusCode.OK, "[" + Threshold.Replace("E3:SP:80:34:02:01", "other") + "]", SoilMoistureThresholdStatus.Invalid),
+            (HttpStatusCode.OK, "[" + Threshold.Replace("E3:SP:80:34:01:01", "other") + "]", SoilMoistureThresholdStatus.Invalid),
+            (HttpStatusCode.OK, "[" + Threshold + "," + Threshold + "]", SoilMoistureThresholdStatus.Invalid),
+            (HttpStatusCode.OK, "[" + Threshold.Replace("\"min\":0,", "") + "]", SoilMoistureThresholdStatus.Invalid),
+            (HttpStatusCode.OK, "[" + Threshold.Replace("\"min\":0", "\"min\":-1") + "]", SoilMoistureThresholdStatus.Invalid),
+            (HttpStatusCode.OK, "[" + Threshold.Replace("\"max\":100", "\"max\":101") + "]", SoilMoistureThresholdStatus.Invalid),
+            (HttpStatusCode.OK, "[" + Threshold.Replace("\"min\":0", "\"min\":99").Replace("\"max\":100", "\"max\":1") + "]", SoilMoistureThresholdStatus.Invalid),
+            (HttpStatusCode.OK, "[" + Threshold.Replace("\"min\":0", "\"min\":\"bad\"") + "]", SoilMoistureThresholdStatus.Invalid),
+            (HttpStatusCode.OK, "not-json", SoilMoistureThresholdStatus.Invalid)
+        };
+        foreach (var (status, body, expected) in cases)
+        {
+            var result = await Reader(new Handler(_ => new HttpResponseMessage(status) { Content = new StringContent(body) })).GetThresholdAsync(Instrument, default);
+            Assert.Equal(new SoilMoistureThresholdResult(expected), result);
+        }
+    }
+
+    [Fact]
+    public async Task ThresholdRejectsUnauthenticatedOrUnsafeRequestsAndHandlesTimeoutAndCancellation()
+    {
+        foreach (var (origin, authenticated, auth, instrument) in new[] {
+            ((string?)null, true, "Bearer caller.jwt.token", Instrument),
+            ("https://ingestion.test", false, "Bearer caller.jwt.token", Instrument),
+            ("https://ingestion.test", true, "Bearer bad", Instrument),
+            ("https://ingestion.test", true, "Bearer caller.jwt.token", new SoilMoistureInstrument("edge", "../evil?x")) })
+        {
+            var handler = new Handler(_ => throw new Exception("must not send"));
+            Assert.Equal(new SoilMoistureThresholdResult(SoilMoistureThresholdStatus.Unavailable), await Reader(handler, origin, authenticated, auth).GetThresholdAsync(instrument, default));
+            Assert.Null(handler.Request);
+        }
+        foreach (var unsafeMac in new[] { ".", "..", "a/b", "a?b", "a#b", "a%2fb", "a\\b" })
+        {
+            var handler = new Handler(_ => throw new Exception("must not send"));
+            Assert.Equal(new SoilMoistureThresholdResult(SoilMoistureThresholdStatus.Unavailable), await Reader(handler).GetThresholdAsync(new SoilMoistureInstrument("edge", unsafeMac), default));
+            Assert.Null(handler.Request);
+        }
+        var transport = new Handler(_ => throw new HttpRequestException());
+        Assert.Equal(new SoilMoistureThresholdResult(SoilMoistureThresholdStatus.Unavailable), await Reader(transport).GetThresholdAsync(Instrument, default));
+        var timeout = new Handler(_ => throw new TaskCanceledException());
+        Assert.Equal(new SoilMoistureThresholdResult(SoilMoistureThresholdStatus.Unavailable), await Reader(timeout).GetThresholdAsync(Instrument, default));
+        using var cts = new CancellationTokenSource(); cts.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => Reader(timeout).GetThresholdAsync(Instrument, cts.Token));
     }
 
     private static IngestionSoilMoistureReader Reader(Handler handler, string? origin = "https://ingestion.test", bool authenticated = true, string authorization = "Bearer caller.jwt.token")

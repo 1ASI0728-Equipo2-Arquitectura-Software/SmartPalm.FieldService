@@ -28,7 +28,7 @@ public static class DependencyInjection
             client.Timeout = TimeSpan.FromSeconds(5);
             client.MaxResponseContentBufferSize = 4 * 1024 * 1024;
         }).ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false })
-          .RedactLoggedHeaders(_ => true);
+          .RemoveAllLoggers(); // Threshold request paths contain a device identifier.
         services.AddScoped<IReportDraftEvidenceRepository, ReportDraftEvidenceRepository>();
         services.AddScoped<ReportDraftService>();
         services.AddScoped<IReportDraftProvider, MiniMaxReportDraftProvider>();
