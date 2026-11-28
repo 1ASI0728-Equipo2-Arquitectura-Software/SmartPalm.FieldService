@@ -23,7 +23,8 @@ public sealed class MiniMaxReportDraftProvider(
         MaxDepth = 8
     };
 
-    public async Task<ReportDraftContent> GenerateAsync(IReadOnlyList<ReportDraftSource> evidence, CancellationToken token)
+    public async Task<ReportDraftContent> GenerateAsync(IReadOnlyList<ReportDraftSource> evidence,
+        IReadOnlyList<ReportSoilMoistureContext> moistureContext, CancellationToken token)
     {
         var key = configuration["MINIMAX_API_KEY"];
         var model = configuration["MINIMAX_MODEL"];
@@ -35,6 +36,21 @@ public sealed class MiniMaxReportDraftProvider(
         using var client = clients.CreateClient(ClientName);
         using var request = new HttpRequestMessage(HttpMethod.Post, Endpoint);
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", key.Trim());
+        var observations = evidence.Select(source => new
+        {
+            source.ObservationId, source.SectorId, source.ObservedAtUtc, source.Description
+        });
+        // Retain the non-irrigation wire format. In contextual drafts, send derived, approved evidence only.
+        object payload = moistureContext.Count == 0 ? observations : new
+        {
+            observations,
+            moistureEvidence = moistureContext.Select(context => new
+            {
+                context.SectorId, context.ReferenceObservationId, comparisonStatus = context.Status, context.Direction,
+                context.LevelBefore, context.LevelAfter, thresholdStatus = context.Threshold.Status,
+                approvedAssessment = context.Assessment, approvedNextCheck = context.NextCheck
+            })
+        };
         request.Content = JsonContent.Create(new
         {
             model,
@@ -44,10 +60,7 @@ public sealed class MiniMaxReportDraftProvider(
             messages = new[]
             {
                 new { role = "system", content = await reader.ReadToEndAsync(token) },
-                new { role = "user", content = JsonSerializer.Serialize(evidence.Select(source => new
-                {
-                    source.ObservationId, source.SectorId, source.ObservedAtUtc, source.Description
-                }), WireJson) }
+                new { role = "user", content = JsonSerializer.Serialize(payload, WireJson) }
             }
         });
 

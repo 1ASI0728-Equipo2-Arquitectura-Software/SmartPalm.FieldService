@@ -47,7 +47,7 @@ public sealed class ReportDraftService(
         var irrigation = sources.Where(source => source.IsIrrigation).DistinctBy(source => source.SectorId).ToArray();
         var corroboration = await Task.WhenAll(irrigation.Take(ReportSoilMoisture.MaxSectors)
             .Select(source => ReportSoilMoisture.CompareAsync(moisture, visit.PlantationId, source, token)));
-        var draft = await provider.GenerateAsync(sources, token);
+        var draft = await provider.GenerateAsync(sources, corroboration, token);
         ValidateDraft(draft, sources);
 
         var limitations = new List<string>
@@ -68,7 +68,7 @@ public sealed class ReportDraftService(
             .Select(source => new ReportDraftFinding(source.SectorId,
                 source.Description.Length <= 500 ? source.Description : ClipDescription(source.Description, 500), [source.ObservationId]))
             .Concat(draft.Findings.Where(finding => !irrigationSectors.Contains(finding.SectorId))).Take(30).ToArray();
-        return new(new(visit.Id, visit.Status.ToString()), draft.Title, findings,
+        return new(new(visit.Id, visit.Status.ToString()), "Borrador técnico: contraste de humedad", findings,
             corroboration.Select(context => context.Assessment).ToArray(), corroboration.Select(context => context.NextCheck).ToArray(),
             sources, limitations, corroboration);
     }

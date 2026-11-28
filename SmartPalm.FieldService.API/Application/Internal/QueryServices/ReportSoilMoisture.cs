@@ -48,17 +48,34 @@ internal static class ReportSoilMoisture
         var before = Summarize(comparison.Before);
         var after = Summarize(comparison.After);
         var delta = after.MedianPercent - before.MedianPercent;
-        var assessment = $"Sector {sector}: la mediana de humedad de un mismo sensor pasó de {Format(before.MedianPercent)} % "
-            + $"(n={before.SampleCount}) a {Format(after.MedianPercent)} % (n={after.SampleCount}); diferencia: {Format(delta)} puntos porcentuales. "
-            + "La comparación no establece la causa ni mide necesariamente el punto observado.";
-        var next = delta < 0
-            ? $"Sector {sector}: verificar si el descenso también aparece en otros puntos y contrastar las mediciones con el registro de riego."
-            : $"Sector {sector}: comparar la humedad del punto observado con la de un punto cercano; la mediana del sensor no disminuyó.";
-        return Context("Compared", assessment, next, before, after, delta);
+        var direction = delta < 0 ? "Falling" : delta > 0 ? "Rising" : "Unchanged";
+        var instrument = comparison.Before[0].Instrument;
+        var reading = instrument is not null && comparison.Before.Concat(comparison.After).All(sample => sample.Instrument == instrument)
+            ? await reader.GetThresholdAsync(instrument, token) : new(SoilMoistureThresholdStatus.Unavailable);
+        var threshold = ToThreshold(reading);
+        var levelBefore = Level(before.MedianPercent, threshold);
+        var levelAfter = Level(after.MedianPercent, threshold);
+        var levelText = threshold.MinPercent is { } min && threshold.MaxPercent is { } max
+            ? $"Frente al rango vigente [{FormatThreshold(min)} %, {FormatThreshold(max)} %], las medianas estuvieron {Describe(levelBefore)} y {Describe(levelAfter)}, respectivamente. "
+            : "Nivel desconocido: no se obtuvo un rango vigente, válido y autorizado. ";
+        var assessment = $"Sector {sector}: mediana de humedad de {Format(before.MedianPercent)} % (n={before.SampleCount}) a {Format(after.MedianPercent)} % (n={after.SampleCount}); "
+            + $"diferencia: {Format(delta)} puntos porcentuales. {levelText}Estos datos no prueban una tendencia sostenida ni la causa en el punto observado.";
+        var next = levelAfter switch
+        {
+            "BelowRange" => "confirmar el nivel por debajo del mínimo con una medición independiente en el punto observado y contrastarlo con el registro de riego."
+                + (delta > 0 ? " La subida de la mediana no elimina que siga por debajo del rango vigente." : string.Empty),
+            "AboveRange" => "confirmar el nivel por encima del máximo con una medición independiente en el punto observado y revisar la cobertura del sensor; no inferir encharcamiento.",
+            "WithinRange" when delta < 0 => "comparar la humedad del punto observado con la de un punto cercano y repetir la medición: la mediana bajó, pero sigue dentro del rango vigente.",
+            "WithinRange" => "comparar la humedad del punto observado con la de un punto cercano: la mediana no bajó y está dentro del rango vigente; esto no descarta un problema localizado.",
+            _ => "verificar el rango configurado para el mismo sensor y repetir mediciones en el punto observado antes de clasificar el nivel."
+        };
+        return Context("Compared", assessment, $"Sector {sector}: {next}", before, after, delta, direction, levelBefore, levelAfter, threshold);
 
         ReportSoilMoistureContext Context(string status, string text, string check, ReportSoilMoisturePeriod? before = null,
-            ReportSoilMoisturePeriod? after = null, decimal? delta = null) => new(sector, observation.ObservationId,
-            anchor, from, to, "Ingestion", "Unverified", status, before, after, delta, text, check);
+            ReportSoilMoisturePeriod? after = null, decimal? delta = null, string direction = "Unknown", string levelBefore = "Unknown",
+            string levelAfter = "Unknown", ReportSoilMoistureThreshold? threshold = null) => new(sector, observation.ObservationId,
+            anchor, from, to, "Ingestion", "Unverified", status, before, after, delta, text, check, direction, levelBefore, levelAfter,
+            threshold ?? new("NotEvaluated", null, null));
     }
 
     private static ReportSoilMoisturePeriod Summarize(IReadOnlyList<SoilMoistureSample> samples)
@@ -70,5 +87,26 @@ internal static class ReportSoilMoisture
             samples.Min(sample => sample.MeasuredAt).ToUniversalTime(), samples.Max(sample => sample.MeasuredAt).ToUniversalTime());
     }
 
+    private static ReportSoilMoistureThreshold ToThreshold(SoilMoistureThresholdResult reading) => reading switch
+    {
+        { Status: SoilMoistureThresholdStatus.Configured, MinPercent: { } min, MaxPercent: { } max }
+            when min >= 0 && max <= 100 && min <= max => new("Configured", min, max),
+        { Status: SoilMoistureThresholdStatus.Configured } => new("Invalid", null, null),
+        _ => new(reading.Status.ToString(), null, null)
+    };
+
+    private static string Level(decimal median, ReportSoilMoistureThreshold threshold) =>
+        threshold.MinPercent is { } min && threshold.MaxPercent is { } max
+            ? median < min ? "BelowRange" : median > max ? "AboveRange" : "WithinRange"
+            : "Unknown";
+
+    private static string Describe(string level) => level switch
+    {
+        "BelowRange" => "por debajo del mínimo",
+        "AboveRange" => "por encima del máximo",
+        _ => "dentro del rango"
+    };
+
     private static string Format(decimal value) => value.ToString("0.##", Spanish);
+    private static string FormatThreshold(decimal value) => value.ToString("0.############################", Spanish);
 }

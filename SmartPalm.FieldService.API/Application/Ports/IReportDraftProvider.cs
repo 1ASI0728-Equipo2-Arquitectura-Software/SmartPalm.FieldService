@@ -4,7 +4,8 @@ namespace SmartPalm.FieldService.Application.Ports;
 
 public interface IReportDraftProvider
 {
-    Task<ReportDraftContent> GenerateAsync(IReadOnlyList<ReportDraftSource> evidence, CancellationToken token);
+    Task<ReportDraftContent> GenerateAsync(IReadOnlyList<ReportDraftSource> evidence,
+        IReadOnlyList<ReportSoilMoistureContext> moistureContext, CancellationToken token);
 }
 
 public interface IReportDraftEvidenceRepository
@@ -27,4 +28,7 @@ public sealed record ReportSoilMoisturePeriod(int SampleCount, decimal MedianPer
 public sealed record ReportSoilMoistureContext(long SectorId, long ReferenceObservationId, DateTimeOffset ObservedAtUtc,
     DateTimeOffset WindowFromUtc, DateTimeOffset WindowToUtc, string Source, string Origin, string Status,
     ReportSoilMoisturePeriod? Before, ReportSoilMoisturePeriod? After, decimal? DeltaPercentagePoints,
-    string Assessment, string NextCheck);
+    string Assessment, string NextCheck, string Direction, string LevelBefore, string LevelAfter,
+    ReportSoilMoistureThreshold Threshold);
+
+public sealed record ReportSoilMoistureThreshold(string Status, decimal? MinPercent, decimal? MaxPercent);

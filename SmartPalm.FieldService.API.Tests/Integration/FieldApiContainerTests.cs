@@ -259,20 +259,31 @@ public class FieldApiContainerTests : IAsyncLifetime
         UseActor(77);
         upstream.ResponseMode = "speculative";
 
-        foreach (var (mode, status, after, delta) in new (string Mode, string Status, decimal? After, decimal? Delta)[]
+        var cases = new (string Mode, string Status, decimal? After, decimal? Delta, string Threshold,
+            decimal? Min, decimal? Max, string LevelBefore, string LevelAfter, string Direction, string Check)[]
         {
-            ("decline", "Compared", 19, -11), ("same", "Compared", 30, 0), ("increase", "Compared", 33, 3),
-            ("empty", "InsufficientData", null, null), ("split", "InsufficientData", null, null),
-            ("unavailable", "Unavailable", null, null)
-        })
+            ("decline", "Compared", 19, -11, "Configured", 20, 80, "WithinRange", "BelowRange", "Falling", "por debajo del mínimo"),
+            ("same", "Compared", 30, 0, "Configured", 30, 30, "WithinRange", "WithinRange", "Unchanged", "punto cercano"),
+            ("increase", "Compared", 33, 3, "Configured", 20, 80, "WithinRange", "WithinRange", "Rising", "punto cercano"),
+            ("below-rising", "Compared", 33, 3, "Configured", 34, 80, "BelowRange", "BelowRange", "Rising", "por debajo del mínimo"),
+            ("above", "Compared", 33, 3, "Configured", 20, 32, "WithinRange", "AboveRange", "Rising", "por encima del máximo"),
+            ("missing", "Compared", 33, 3, "Missing", null, null, "Unknown", "Unknown", "Rising", "rango configurado"),
+            ("denied", "Compared", 33, 3, "Denied", null, null, "Unknown", "Unknown", "Rising", "rango configurado"),
+            ("invalid", "Compared", 33, 3, "Invalid", null, null, "Unknown", "Unknown", "Rising", "rango configurado"),
+            ("threshold-unavailable", "Compared", 33, 3, "Unavailable", null, null, "Unknown", "Unknown", "Rising", "rango configurado"),
+            ("empty", "InsufficientData", null, null, "NotEvaluated", null, null, "Unknown", "Unknown", "Unknown", "mediciones"),
+            ("split", "InsufficientData", null, null, "NotEvaluated", null, null, "Unknown", "Unknown", "Unknown", "mediciones"),
+            ("unavailable", "Unavailable", null, null, "NotEvaluated", null, null, "Unknown", "Unknown", "Unknown", "mediciones")
+        };
+        foreach (var (mode, status, after, delta, thresholdStatus, min, max, levelBefore, levelAfter, direction, check) in cases)
         {
             telemetry.Mode = mode;
             using var response = await client.PostAsync(irrigationPath, null);
             Assert.Equal(HttpStatusCode.OK, response.StatusCode);
             var body = await response.Content.ReadAsStringAsync();
             Assert.DoesNotContain("UNSUPPORTED-MODEL-CAUSE", body);
-            Assert.DoesNotContain("device-alpha", body);
-            Assert.DoesNotContain("device-alpha", upstream.Prompt);
+            Assert.DoesNotContain("device-alpha", body, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("device-alpha", upstream.Prompt, StringComparison.OrdinalIgnoreCase);
             using var document = JsonDocument.Parse(body);
             var root = document.RootElement;
             var context = Assert.Single(root.GetProperty("soilMoistureContext").EnumerateArray());
@@ -280,6 +291,20 @@ public class FieldApiContainerTests : IAsyncLifetime
             Assert.Equal("Ingestion", context.GetProperty("source").GetString());
             Assert.Equal("Unverified", context.GetProperty("origin").GetString());
             Assert.Equal(status, context.GetProperty("status").GetString());
+            Assert.Equal(levelBefore, context.GetProperty("levelBefore").GetString());
+            Assert.Equal(levelAfter, context.GetProperty("levelAfter").GetString());
+            Assert.Equal(direction, context.GetProperty("direction").GetString());
+            var threshold = context.GetProperty("threshold");
+            Assert.Equal(thresholdStatus, threshold.GetProperty("status").GetString());
+            Assert.Equal(min, NullableNumber(threshold.GetProperty("minPercent")));
+            Assert.Equal(max, NullableNumber(threshold.GetProperty("maxPercent")));
+            Assert.Contains(check, root.GetProperty("outstandingChecks")[0].GetString());
+            using var prompt = JsonDocument.Parse(upstream.Prompt);
+            var modelEvidence = Assert.Single(prompt.RootElement.GetProperty("moistureEvidence").EnumerateArray());
+            Assert.Equal(levelAfter, modelEvidence.GetProperty("levelAfter").GetString());
+            Assert.Equal(direction, modelEvidence.GetProperty("direction").GetString());
+            Assert.Equal(thresholdStatus, modelEvidence.GetProperty("thresholdStatus").GetString());
+            Assert.Contains("configured level", upstream.Instructions);
             Assert.Equal(root.GetProperty("sources")[0].GetProperty("observationId"), context.GetProperty("referenceObservationId"), JsonElement.DeepEquals);
             Assert.Equal(now.AddHours(-2).Ticks / 10, context.GetProperty("windowFromUtc").GetDateTimeOffset().UtcTicks / 10);
             Assert.Equal(now.AddHours(2).Ticks / 10, context.GetProperty("windowToUtc").GetDateTimeOffset().UtcTicks / 10);
@@ -291,21 +316,23 @@ public class FieldApiContainerTests : IAsyncLifetime
                 Assert.Equal(3, context.GetProperty("after").GetProperty("sampleCount").GetInt32());
                 Assert.Equal(median, context.GetProperty("after").GetProperty("medianPercent").GetDecimal());
                 Assert.Equal(difference, context.GetProperty("deltaPercentagePoints").GetDecimal());
-                Assert.Contains(difference < 0 ? "otros puntos" : "punto cercano", root.GetProperty("outstandingChecks")[0].GetString());
             }
             else
             {
                 Assert.Equal(JsonValueKind.Null, context.GetProperty("before").ValueKind);
                 Assert.Equal(JsonValueKind.Null, context.GetProperty("after").ValueKind);
                 Assert.Equal(JsonValueKind.Null, context.GetProperty("deltaPercentagePoints").ValueKind);
-                Assert.Contains("mediciones", root.GetProperty("outstandingChecks")[0].GetString());
             }
         }
-        Assert.Equal(6, telemetry.Paths.Count);
+        Assert.Equal(cases.Length, telemetry.Paths.Count);
         Assert.All(telemetry.Paths, path => Assert.Equal("/api/v1/sectors/99/sensor-readings", path));
-        Assert.Equal(13, upstream.Calls);
+        Assert.Equal(cases.Count(test => test.Status == "Compared"), telemetry.ThresholdPaths.Count);
+        Assert.All(telemetry.ThresholdPaths, path => Assert.Equal("/api/v1/devices/DEVICE-ALPHA/thresholds", path));
+        Assert.Equal(7 + cases.Length, upstream.Calls);
         Assert.Equal(irrigationSnapshot, await client.GetStringAsync($"{visits}/{irrigationVisit}"));
         Assert.Equal(irrigationCounts, await Counts());
+
+        static decimal? NullableNumber(JsonElement value) => value.ValueKind == JsonValueKind.Null ? null : value.GetDecimal();
 
         void UseActor(long id)
         {
@@ -356,18 +383,23 @@ public class FieldApiContainerTests : IAsyncLifetime
     {
         public int Calls { get; private set; }
         public string Prompt { get; private set; } = "";
+        public string Instructions { get; private set; } = "";
         public string ResponseMode { get; set; } = "valid";
 
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
         {
             Calls++;
+            Assert.Equal(new AuthenticationHeaderValue("Bearer", "synthetic-key"), request.Headers.Authorization);
             if (ResponseMode == "oversized") return new(HttpStatusCode.OK) { Content = new ByteArrayContent(new byte[128 * 1024 + 1]) };
             if (ResponseMode == "unavailable") return new(HttpStatusCode.ServiceUnavailable) { Content = new StringContent("upstream-internal-detail") };
             if (ResponseMode == "timeout") throw new TaskCanceledException("upstream-internal-timeout-detail");
             using var parsed = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(token));
+            Instructions = parsed.RootElement.GetProperty("messages")[0].GetProperty("content").GetString()!;
             Prompt = parsed.RootElement.GetProperty("messages")[1].GetProperty("content").GetString()!;
             using var observations = JsonDocument.Parse(Prompt);
-            var findings = observations.RootElement.EnumerateArray().Select(source => new
+            var sourceRows = observations.RootElement.ValueKind == JsonValueKind.Array
+                ? observations.RootElement : observations.RootElement.GetProperty("observations");
+            var findings = sourceRows.EnumerateArray().Select(source => new
             {
                 sectorId = ResponseMode == "wrong-sector" ? 999 : source.GetProperty("sectorId").GetInt64(),
                 text = source.GetProperty("description").GetString(),
@@ -375,7 +407,7 @@ public class FieldApiContainerTests : IAsyncLifetime
             }).ToArray();
             var content = ResponseMode == "invalid-json" ? "not JSON" : JsonSerializer.Serialize(new
             {
-                title = "Informe de prueba", findings,
+                title = ResponseMode == "speculative" ? "UNSUPPORTED-MODEL-CAUSE" : "Informe de prueba", findings,
                 interpretation = ResponseMode == "speculative" ? new[] { "UNSUPPORTED-MODEL-CAUSE" } : Array.Empty<string>(),
                 outstandingChecks = ResponseMode == "speculative" ? new[] { "UNSUPPORTED-MODEL-CAUSE" } : Array.Empty<string>()
             });
@@ -386,18 +418,40 @@ public class FieldApiContainerTests : IAsyncLifetime
     private sealed class MoistureUpstream(DateTime anchor) : HttpMessageHandler
     {
         public List<string> Paths { get; } = [];
+        public List<string> ThresholdPaths { get; } = [];
         public string Mode { get; set; } = "decline";
 
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
         {
-            Paths.Add(request.RequestUri!.AbsolutePath);
+            var path = request.RequestUri!.AbsolutePath;
             Assert.Equal("Bearer", request.Headers.Authorization?.Scheme);
+            if (path.EndsWith("/thresholds", StringComparison.Ordinal))
+            {
+                ThresholdPaths.Add(path);
+                var failure = Mode switch
+                {
+                    "missing" => HttpStatusCode.NotFound,
+                    "denied" => HttpStatusCode.Forbidden,
+                    "threshold-unavailable" => HttpStatusCode.ServiceUnavailable,
+                    _ => HttpStatusCode.OK
+                };
+                var response = new HttpResponseMessage(failure);
+                if (failure == HttpStatusCode.OK)
+                    response.Content = JsonContent.Create(new[]
+                    {
+                        new { edgeMac = "edge-alpha", iotMac = Mode == "invalid" ? "device-beta" : "device-alpha",
+                            type = "SoilMoisture", min = Mode == "below-rising" ? 34 : Mode == "same" ? 30 : 20,
+                            max = Mode == "above" ? 32 : Mode == "same" ? 30 : 80 }
+                    });
+                return Task.FromResult(response);
+            }
+            Paths.Add(path);
             if (Mode == "unavailable") return Task.FromResult(new HttpResponseMessage(HttpStatusCode.ServiceUnavailable));
             var rows = new List<object>();
             if (Mode != "empty")
             {
                 rows.Add(Row(-60, 29)); rows.Add(Row(-45, 30)); rows.Add(Row(-30, 31));
-                var median = Mode == "same" ? 30 : Mode == "increase" ? 33 : 19;
+                var median = Mode == "same" ? 30 : Mode is "decline" or "split" ? 19 : 33;
                 var afterDevice = Mode == "split" ? "device-beta" : "device-alpha";
                 rows.Add(Row(10, median - 1, afterDevice)); rows.Add(Row(30, median, afterDevice)); rows.Add(Row(60, median + 1, afterDevice));
                 rows.Add(Row(-60, 29)); // Duplicate timestamp must not weight the median.
