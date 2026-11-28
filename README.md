@@ -36,6 +36,8 @@ API: `http://localhost:5107`; health: `/health/ready`. El perfil `messaging` lev
 
 Para habilitar el borrador, inyecta `MINIMAX_API_KEY` como secreto de ejecución de Field y, opcionalmente, `MINIMAX_MODEL` (por defecto, `MiniMax-M3.1-Flash`). Si falta la clave, el borrador responde `502`; las otras operaciones de Field siguen disponibles. MiniMax recibe hasta 30 observaciones de la visita con sus referencias de sector y fecha. No incluyas datos personales en las observaciones de la prueba.
 
+Si hay observaciones de categoría `Irrigation`, Field consulta la humedad del suelo de hasta tres sectores con `Ingestion__BaseUrl` (origen interno de confianza) usando el JWT original. `soilMoistureContext` separa la evidencia instrumental del hallazgo observado: compara las medianas del mismo sensor en las dos horas anteriores y posteriores, con al menos tres marcas distintas por lado. Los estados son `Compared`, `InsufficientData` y `Unavailable`. Field calcula las cifras y no envía telemetría ni identificadores del sensor a MiniMax. Configura el mismo emisor, audiencia y firma JWT que usa Ingestion, y HTTPS cuando el enlace sale de la red privada de Docker. Si falta el destino o Ingestion falla, se devuelve el borrador con contexto explícitamente no disponible; nunca se sugiere una causa sin datos.
+
 ## Validación
 
 ```powershell

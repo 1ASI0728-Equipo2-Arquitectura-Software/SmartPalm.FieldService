@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using SmartPalm.FieldService.Application.Ports;
+using SmartPalm.FieldService.Domain.Model.ValueObjects;
 
 namespace SmartPalm.FieldService.Infrastructure.Persistence;
 
@@ -14,6 +15,7 @@ internal sealed class ReportDraftEvidenceRepository(FieldDbContext db) : IReport
         .Take(limit)
         .Select(row => new ReportDraftSource(row.observation.Id, row.inspection.Id, row.inspection.SectorId,
             row.observation.ObservedAtUtc, row.observation.Description.Length > descriptionLimit
-                ? row.observation.Description.Substring(0, descriptionLimit) : row.observation.Description))
+                ? row.observation.Description.Substring(0, descriptionLimit) : row.observation.Description,
+            row.observation.Category == ObservationCategory.Irrigation))
         .ToArrayAsync(token);
 }

@@ -15,7 +15,8 @@ public sealed class ReportDraftService(
     IFieldVisitRepository visits,
     IFieldProjectionRepository projections,
     IReportDraftEvidenceRepository evidence,
-    IReportDraftProvider provider)
+    IReportDraftProvider provider,
+    ISoilMoistureReader moisture)
 {
     private const int MaxObservations = 30;
     private const int MaxObservationLength = 600;
@@ -40,23 +41,40 @@ public sealed class ReportDraftService(
         var sources = rows.Take(MaxObservations).Select(row => row with
         {
             Description = row.Description.Length <= MaxObservationLength
-                ? row.Description : ClipDescription(row.Description)
+                ? row.Description : ClipDescription(row.Description, MaxObservationLength)
         }).ToArray();
+        // Sources are already ordered newest first. Use the latest irrigation note per sector, not the request time.
+        var irrigation = sources.Where(source => source.IsIrrigation).DistinctBy(source => source.SectorId).ToArray();
+        var corroboration = await Task.WhenAll(irrigation.Take(ReportSoilMoisture.MaxSectors)
+            .Select(source => ReportSoilMoisture.CompareAsync(moisture, visit.PlantationId, source, token)));
         var draft = await provider.GenerateAsync(sources, token);
         ValidateDraft(draft, sources);
 
         var limitations = new List<string>
         {
             "Borrador generado por IA. Verifique su contenido contra las observaciones antes de usarlo.",
-            "No se consultaron intervenciones, alertas, diagnósticos, sensores ni clima."
+            corroboration.Length == 0 ? "No se consultaron intervenciones, alertas, diagnósticos, sensores ni clima."
+                : "Solo se consultó humedad del suelo. Ingestion no verifica si los datos son físicos o simulados."
         };
         if (truncated) limitations.Add("El contexto se limitó a 30 observaciones y 600 caracteres por observación.");
-        return new ReportDraftResult(new(visit.Id, visit.Status.ToString()), draft.Title,
-            draft.Findings, draft.Interpretation, draft.OutstandingChecks, sources, limitations);
+        if (irrigation.Length > ReportSoilMoisture.MaxSectors) limitations.Add("El contraste de humedad se limitó a los tres sectores con observaciones de riego más recientes.");
+        if (corroboration.Length == 0)
+            return new(new(visit.Id, visit.Status.ToString()), draft.Title,
+                draft.Findings, draft.Interpretation, draft.OutstandingChecks, sources, limitations, corroboration);
+
+        // Authoritative findings for irrigated sectors are recorded text. Never present an uncited AI cause or action there.
+        var irrigationSectors = irrigation.Select(source => source.SectorId).ToHashSet();
+        var findings = sources.Where(source => irrigationSectors.Contains(source.SectorId))
+            .Select(source => new ReportDraftFinding(source.SectorId,
+                source.Description.Length <= 500 ? source.Description : ClipDescription(source.Description, 500), [source.ObservationId]))
+            .Concat(draft.Findings.Where(finding => !irrigationSectors.Contains(finding.SectorId))).Take(30).ToArray();
+        return new(new(visit.Id, visit.Status.ToString()), draft.Title, findings,
+            corroboration.Select(context => context.Assessment).ToArray(), corroboration.Select(context => context.NextCheck).ToArray(),
+            sources, limitations, corroboration);
     }
 
-    private static string ClipDescription(string value) =>
-        value[..(char.IsHighSurrogate(value[MaxObservationLength - 1]) ? MaxObservationLength - 1 : MaxObservationLength)];
+    private static string ClipDescription(string value, int length) =>
+        value[..(char.IsHighSurrogate(value[length - 1]) ? length - 1 : length)];
 
     private static void ValidateDraft(ReportDraftContent draft, IReadOnlyList<ReportDraftSource> sources)
     {

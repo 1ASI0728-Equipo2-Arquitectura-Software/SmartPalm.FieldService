@@ -153,15 +153,20 @@ public class FieldApiContainerTests : IAsyncLifetime
     [DockerRequiredFact, Trait("Category", "Integration")]
     public async Task ReportDraft_UsesOnlyTheAuthorizedVisitAndDoesNotWrite()
     {
+        var now = DateTime.UtcNow;
         using var upstream = new DraftUpstream();
+        using var telemetry = new MoistureUpstream(now);
         using var factory = CreateFactory().WithWebHostBuilder(builder =>
         {
             builder.UseSetting("MINIMAX_API_KEY", "synthetic-key");
-            builder.ConfigureServices(services => services.AddHttpClient(MiniMaxReportDraftProvider.ClientName)
-                .ConfigurePrimaryHttpMessageHandler(() => upstream));
+            builder.UseSetting("Ingestion:BaseUrl", "http://ingestion.test");
+            builder.ConfigureServices(services =>
+            {
+                services.AddHttpClient(MiniMaxReportDraftProvider.ClientName).ConfigurePrimaryHttpMessageHandler(() => upstream);
+                services.AddHttpClient(IngestionSoilMoistureReader.ClientName).ConfigurePrimaryHttpMessageHandler(() => telemetry);
+            });
         });
         using var client = factory.CreateClient();
-        var now = DateTime.UtcNow;
         await using var connection = await new ConnectionFactory { Uri = new Uri(_rabbit.GetConnectionString()) }.CreateConnectionAsync();
         await using var channel = await connection.CreateChannelAsync();
         await channel.ExchangeDeclareAsync("smartpalm.events", ExchangeType.Topic, true, false);
@@ -236,6 +241,71 @@ public class FieldApiContainerTests : IAsyncLifetime
         Assert.Equal(7, upstream.Calls);
         Assert.Equal(snapshot, await client.GetStringAsync($"{visits}/{visit}"));
         Assert.Equal(counts, await Counts());
+        Assert.Empty(telemetry.Paths); // Non-irrigation, ineligible and unauthorized requests must not look up readings.
+
+        var irrigationVisit = await Plan();
+        await Record(irrigationVisit, [(99, "Área seca junto a una línea de riego.")], "Irrigation");
+        var irrigationPath = $"{visits}/{irrigationVisit}/report-draft";
+        var irrigationSnapshot = await client.GetStringAsync($"{visits}/{irrigationVisit}");
+        var irrigationCounts = await Counts();
+        UseActor(78);
+        using (var denied = await client.PostAsync(irrigationPath, null))
+        {
+            Assert.Equal(HttpStatusCode.Forbidden, denied.StatusCode);
+            Assert.Equal(string.Empty, await denied.Content.ReadAsStringAsync());
+        }
+        Assert.Empty(telemetry.Paths);
+        Assert.Equal(7, upstream.Calls);
+        UseActor(77);
+        upstream.ResponseMode = "speculative";
+
+        foreach (var (mode, status, after, delta) in new (string Mode, string Status, decimal? After, decimal? Delta)[]
+        {
+            ("decline", "Compared", 19, -11), ("same", "Compared", 30, 0), ("increase", "Compared", 33, 3),
+            ("empty", "InsufficientData", null, null), ("split", "InsufficientData", null, null),
+            ("unavailable", "Unavailable", null, null)
+        })
+        {
+            telemetry.Mode = mode;
+            using var response = await client.PostAsync(irrigationPath, null);
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            var body = await response.Content.ReadAsStringAsync();
+            Assert.DoesNotContain("UNSUPPORTED-MODEL-CAUSE", body);
+            Assert.DoesNotContain("device-alpha", body);
+            Assert.DoesNotContain("device-alpha", upstream.Prompt);
+            using var document = JsonDocument.Parse(body);
+            var root = document.RootElement;
+            var context = Assert.Single(root.GetProperty("soilMoistureContext").EnumerateArray());
+            Assert.Equal(99, context.GetProperty("sectorId").GetInt64());
+            Assert.Equal("Ingestion", context.GetProperty("source").GetString());
+            Assert.Equal("Unverified", context.GetProperty("origin").GetString());
+            Assert.Equal(status, context.GetProperty("status").GetString());
+            Assert.Equal(root.GetProperty("sources")[0].GetProperty("observationId"), context.GetProperty("referenceObservationId"), JsonElement.DeepEquals);
+            Assert.Equal(now.AddHours(-2).Ticks / 10, context.GetProperty("windowFromUtc").GetDateTimeOffset().UtcTicks / 10);
+            Assert.Equal(now.AddHours(2).Ticks / 10, context.GetProperty("windowToUtc").GetDateTimeOffset().UtcTicks / 10);
+            Assert.StartsWith("Sector 99:", root.GetProperty("interpretation")[0].GetString());
+            if (after is { } median && delta is { } difference)
+            {
+                Assert.Equal(3, context.GetProperty("before").GetProperty("sampleCount").GetInt32());
+                Assert.Equal(30, context.GetProperty("before").GetProperty("medianPercent").GetDecimal());
+                Assert.Equal(3, context.GetProperty("after").GetProperty("sampleCount").GetInt32());
+                Assert.Equal(median, context.GetProperty("after").GetProperty("medianPercent").GetDecimal());
+                Assert.Equal(difference, context.GetProperty("deltaPercentagePoints").GetDecimal());
+                Assert.Contains(difference < 0 ? "otros puntos" : "punto cercano", root.GetProperty("outstandingChecks")[0].GetString());
+            }
+            else
+            {
+                Assert.Equal(JsonValueKind.Null, context.GetProperty("before").ValueKind);
+                Assert.Equal(JsonValueKind.Null, context.GetProperty("after").ValueKind);
+                Assert.Equal(JsonValueKind.Null, context.GetProperty("deltaPercentagePoints").ValueKind);
+                Assert.Contains("mediciones", root.GetProperty("outstandingChecks")[0].GetString());
+            }
+        }
+        Assert.Equal(6, telemetry.Paths.Count);
+        Assert.All(telemetry.Paths, path => Assert.Equal("/api/v1/sectors/99/sensor-readings", path));
+        Assert.Equal(13, upstream.Calls);
+        Assert.Equal(irrigationSnapshot, await client.GetStringAsync($"{visits}/{irrigationVisit}"));
+        Assert.Equal(irrigationCounts, await Counts());
 
         void UseActor(long id)
         {
@@ -252,14 +322,14 @@ public class FieldApiContainerTests : IAsyncLifetime
             return (await response.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetInt64();
         }
 
-        async Task Record(long id, (long Sector, string? Observation)[] rows)
+        async Task Record(long id, (long Sector, string? Observation)[] rows, string category = "General")
         {
             var endpoint = $"{visits}/{id}";
             Assert.Equal(HttpStatusCode.OK, (await client.PatchAsJsonAsync($"{endpoint}/start", new { agronomistId = 77 })).StatusCode);
             foreach (var (sector, observation) in rows)
             {
                 var observations = observation is null ? Array.Empty<object>() : new object[]
-                    { new { description = observation, category = "General", severity = "Low", photoReferences = new[] { "private-test-photo" }, observedAt = now } };
+                    { new { description = observation, category, severity = "Low", photoReferences = new[] { "private-test-photo" }, observedAt = now } };
                 Assert.Equal(HttpStatusCode.Created, (await client.PostAsJsonAsync($"{endpoint}/inspections", new { clientReference = Guid.NewGuid(), sectorId = sector, agronomistId = 77, observations, inspectedAt = now })).StatusCode);
             }
             Assert.Equal(HttpStatusCode.OK, (await client.PatchAsJsonAsync($"{endpoint}/complete", new { agronomistId = 77 })).StatusCode);
@@ -305,10 +375,44 @@ public class FieldApiContainerTests : IAsyncLifetime
             }).ToArray();
             var content = ResponseMode == "invalid-json" ? "not JSON" : JsonSerializer.Serialize(new
             {
-                title = "Informe de prueba", findings, interpretation = Array.Empty<string>(), outstandingChecks = Array.Empty<string>()
+                title = "Informe de prueba", findings,
+                interpretation = ResponseMode == "speculative" ? new[] { "UNSUPPORTED-MODEL-CAUSE" } : Array.Empty<string>(),
+                outstandingChecks = ResponseMode == "speculative" ? new[] { "UNSUPPORTED-MODEL-CAUSE" } : Array.Empty<string>()
             });
             return new(HttpStatusCode.OK) { Content = JsonContent.Create(new { choices = new[] { new { finish_reason = "stop", message = new { content } } } }) };
         }
+    }
+
+    private sealed class MoistureUpstream(DateTime anchor) : HttpMessageHandler
+    {
+        public List<string> Paths { get; } = [];
+        public string Mode { get; set; } = "decline";
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
+        {
+            Paths.Add(request.RequestUri!.AbsolutePath);
+            Assert.Equal("Bearer", request.Headers.Authorization?.Scheme);
+            if (Mode == "unavailable") return Task.FromResult(new HttpResponseMessage(HttpStatusCode.ServiceUnavailable));
+            var rows = new List<object>();
+            if (Mode != "empty")
+            {
+                rows.Add(Row(-60, 29)); rows.Add(Row(-45, 30)); rows.Add(Row(-30, 31));
+                var median = Mode == "same" ? 30 : Mode == "increase" ? 33 : 19;
+                var afterDevice = Mode == "split" ? "device-beta" : "device-alpha";
+                rows.Add(Row(10, median - 1, afterDevice)); rows.Add(Row(30, median, afterDevice)); rows.Add(Row(60, median + 1, afterDevice));
+                rows.Add(Row(-60, 29)); // Duplicate timestamp must not weight the median.
+                rows.Add(Row(20, 100, sector: 100)); rows.Add(Row(25, 100, plantation: 12));
+                rows.Add(Row(35, 100, unit: "Celsius")); rows.Add(Row(150, 100));
+            }
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = JsonContent.Create(rows) });
+        }
+
+        private object Row(int minutes, int value, string device = "device-alpha", long sector = 99,
+            long plantation = 11, string unit = "Percent") => new
+        {
+            edgeDeviceMacAddress = "edge-alpha", iotDeviceMacAddress = device, sensorType = "SoilMoisture",
+            value, unit, measuredAt = anchor.AddMinutes(minutes), plantationId = plantation, sectorId = sector
+        };
     }
 
     private WebApplicationFactory<Program> CreateFactory() => new WebApplicationFactory<Program>().WithWebHostBuilder(builder => { builder.UseEnvironment("Testing"); builder.UseSetting("ConnectionStrings:FieldDatabase", _postgres.GetConnectionString()); builder.UseSetting("Jwt:Issuer", "tests"); builder.UseSetting("Jwt:Audience", "tests"); builder.UseSetting("Jwt:Key", "field-tests-signing-key-with-at-least-32-characters"); builder.UseSetting("RabbitMq:Enabled", "true"); builder.UseSetting("RabbitMq:Uri", _rabbit.GetConnectionString()); builder.UseSetting("RabbitMq:Queue", $"smartpalm.field.tests.{Guid.NewGuid():N}"); });
