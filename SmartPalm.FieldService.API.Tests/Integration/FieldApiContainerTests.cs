@@ -298,7 +298,31 @@ public class FieldApiContainerTests : IAsyncLifetime
             Assert.Equal(thresholdStatus, threshold.GetProperty("status").GetString());
             Assert.Equal(min, NullableNumber(threshold.GetProperty("minPercent")));
             Assert.Equal(max, NullableNumber(threshold.GetProperty("maxPercent")));
-            Assert.Contains(check, root.GetProperty("outstandingChecks")[0].GetString());
+            var interpretation = root.GetProperty("interpretation")[0].GetString()!;
+            var nextCheck = root.GetProperty("outstandingChecks")[0].GetString()!;
+            Assert.Contains(check, nextCheck);
+            Assert.Equal(context.GetProperty("assessment").GetString(), interpretation);
+            Assert.Equal(context.GetProperty("nextCheck").GetString(), nextCheck);
+            Assert.InRange(interpretation.Length, 1, 500);
+            Assert.InRange(nextCheck.Length, 1, 500);
+            if (mode == "below-rising")
+            {
+                Assert.Collection(interpretation.Split("\n\n"),
+                    change => Assert.Contains("La mediana subió 3 puntos porcentuales.", change),
+                    level =>
+                    {
+                        Assert.Contains("Ambas medianas quedaron por debajo del mínimo.", level);
+                        Assert.Contains("no confirma la causa", level);
+                    });
+                Assert.Collection(nextCheck.Split("\n\n"),
+                    steps =>
+                    {
+                        Assert.Contains("Primero, confirma", steps);
+                        Assert.Contains("registro de riego", steps);
+                    },
+                    reason => Assert.Contains("sin dar por hecha una falla de riego", reason));
+            }
+            if (mode == "missing") Assert.Contains("pero no clasificar el nivel de humedad", interpretation);
             using var prompt = JsonDocument.Parse(upstream.Prompt);
             var modelEvidence = Assert.Single(prompt.RootElement.GetProperty("moistureEvidence").EnumerateArray());
             Assert.Equal(levelAfter, modelEvidence.GetProperty("levelAfter").GetString());

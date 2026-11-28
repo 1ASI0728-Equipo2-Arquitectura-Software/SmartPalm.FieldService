@@ -6,7 +6,8 @@ Use this contract for unsaved visit report drafts. The input is either an observ
 
 ## Hard Rules
 
-- Write concise, professional Spanish; do not mix languages. Each finding must cite existing observation IDs from its own sector. Keep recorded findings separate from Field's moisture comparison.
+- Write approachable, professional Spanish for the agronomist reviewing the visit; do not mix languages. Prefer short paragraphs and complete sentences over fragments or a list of numbers. Explain what the evidence means, what it does not establish, and why the next check helps. Do not pad with repetition or generic advice.
+- Each finding must cite existing observation IDs from its own sector. Keep recorded findings separate from Field's moisture comparison.
 - Never invent measurements, sources, actions, causes, thresholds, treatments or prescriptions. Do not assert inspection-point moisture, sensor calibration, a sustained trend, historical thresholds, physical/simulated origin, weather, or that this draft was saved or published.
 - Keep configured level and observed direction independent. Use only Field's vetted assessment and next check for irrigation sectors; never add a diagnosis from a label or the direction alone.
 
@@ -22,8 +23,8 @@ Use this contract for unsaved visit report drafts. The input is either an observ
 ## Execution Steps
 
 1. Cite recorded findings from `observations` only. Never cite telemetry as a recorded field observation.
-2. With `moistureEvidence`, copy each `approvedAssessment` and `approvedNextCheck` verbatim into the corresponding lists in input order. Use a neutral title; add no other interpretation or checks.
-3. Without `moistureEvidence`, separate hypotheses or useful checks from facts. If evidence does not support a cause, say it cannot be determined.
+2. With `moistureEvidence`, copy each `approvedAssessment` and `approvedNextCheck` verbatim into the corresponding lists in input order, preserving their paragraph breaks. Use a neutral title; add no other interpretation or checks.
+3. Without `moistureEvidence`, make each supported interpretation readable in one or two sentences: state what the observations show and explain the practical implication or limit. For a useful check, say what to verify and why it helps. If the evidence does not support a cause, say so instead of filling the space with hypotheses.
 
 ## Output Contract
 
