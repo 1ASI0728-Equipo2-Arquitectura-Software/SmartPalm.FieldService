@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using SmartPalm.FieldService.Application.DomainServices;
 using SmartPalm.FieldService.Domain.Model.Commands;
 using SmartPalm.FieldService.Domain.Model.Queries;
 using SmartPalm.FieldService.Domain.Repositories;
@@ -9,14 +10,15 @@ using SmartPalm.FieldService.Interfaces.REST.Transform;
 using Swashbuckle.AspNetCore.Annotations;
 namespace SmartPalm.FieldService.Interfaces.REST.Controllers;
 [Authorize, ApiController, Route("api"), SwaggerTag("Agronomic intervention traceability")]
-public class InterventionsController(IInterventionCommandService commands, IInterventionQueryService queries, IFieldProjectionRepository projections) : ControllerBase
+public class InterventionsController(IInterventionCommandService commands, IInterventionQueryService queries, IFieldProjectionRepository projections, FieldAuthorizationService authorization = null!) : ControllerBase
 {
+    private Task EnsureRead(FieldActor a, long plantationId, CancellationToken t) => authorization.EnsurePlantationReadAccessAsync(a.Id, a.IsAdmin, a.IsAgronomist, a.IsGrower, plantationId, t);
     [HttpPost("v1/field/interventions")]
     public async Task<IActionResult> RegisterIntervention(RegisterFieldInterventionResource r, CancellationToken t)
     {
         var subject = User.FindFirst("sub")?.Value ?? User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
         if (!long.TryParse(subject, out var callerId)) throw new UnauthorizedAccessException("JWT subject is required.");
-        var administrator = User.IsInRole("Administrator") || User.HasClaim(System.Security.Claims.ClaimTypes.Role, "Administrator");
+        var administrator = User.IsInRole("Administrator") || User.HasClaim(System.Security.Claims.ClaimTypes.Role, "Administrator") || User.HasClaim("role", "Administrator");
         if (r.registeredBy != callerId && !administrator) return Forbid();
         var x = await commands.HandleAsync(new RegisterInterventionCommand(
             r.plantationId, 
@@ -51,20 +53,24 @@ public class InterventionsController(IInterventionCommandService commands, IInte
     public async Task<IActionResult> GetAgronomicInterventionById(long id, CancellationToken t)
     {
         var x = await queries.HandleAsync(new GetInterventionByIdQuery(id), t); 
-        return x is null ? NotFound() : Ok(FieldAssemblers.ToResource(x));
+        if (x is null) return NotFound();
+        await EnsureRead(FieldActor.From(User), x.PlantationId, t);
+        return Ok(FieldAssemblers.ToResource(x));
     }
 
     [HttpGet("v1/interventions/{id:long}")]
     public async Task<IActionResult> GetLegacyAgronomicInterventionById(long id, CancellationToken t)
     {
         var x = await queries.HandleAsync(new GetInterventionByIdQuery(id), t); 
-        return x is null ? NotFound() : Ok(FieldAssemblers.ToLegacyResource(x));
+        if (x is null) return NotFound();
+        await EnsureRead(FieldActor.From(User), x.PlantationId, t);
+        return Ok(FieldAssemblers.ToLegacyResource(x));
     }
     [HttpGet("v1/field/plantations/{plantationId:long}/interventions")] 
-    public async Task<IActionResult> ListInterventionsByPlantation(long plantationId, [FromQuery] long? sectorId, [FromQuery] string? type, [FromQuery] string? status, [FromQuery] DateTime? from, [FromQuery] DateTime? to, CancellationToken t) => Ok((await queries.HandleAsync(new GetInterventionsByPlantationQuery(plantationId, sectorId, FieldAssemblers.ParseInterventionType(type), FieldAssemblers.ParseInterventionStatus(status), from, to), t)).Select(FieldAssemblers.ToResource));
-[HttpGet("v1/plantations/{plantationId:long}/interventions")] public async Task<IActionResult> ListLegacyInterventionsByPlantation(long plantationId, CancellationToken t) => Ok((await queries.HandleAsync(new GetInterventionsByPlantationQuery(plantationId, null, null, null, null, null), t)).Select(FieldAssemblers.ToLegacyResource));
-[HttpGet("v1/sectors/{sectorId:long}/interventions")] public async Task<IActionResult> ListInterventionsBySector(long sectorId, CancellationToken t) => Ok((await queries.HandleAsync(new GetInterventionsBySectorQuery(sectorId), t)).Select(FieldAssemblers.ToLegacyResource));
-[HttpGet("v1/recommendations/{recommendationId:long}/interventions")] public async Task<IActionResult> ListInterventionsByRecommendation(long recommendationId, CancellationToken t) => Ok((await queries.HandleAsync(new GetInterventionsByRecommendationQuery(recommendationId), t)).Select(FieldAssemblers.ToLegacyResource));
-[HttpPatch("v1/field/interventions/{id:long}/verify")] public async Task<IActionResult> VerifyIntervention(long id, ReviewInterventionResource r, CancellationToken t) => Ok(FieldAssemblers.ToResource(await commands.HandleAsync(new VerifyInterventionCommand(id, r.agronomistId, r.notes), t)));
-[HttpPatch("v1/field/interventions/{id:long}/reject")] public async Task<IActionResult> RejectIntervention(long id, ReviewInterventionResource r, CancellationToken t) => Ok(FieldAssemblers.ToResource(await commands.HandleAsync(new RejectInterventionCommand(id, r.agronomistId, r.notes), t)));
+    public async Task<IActionResult> ListInterventionsByPlantation(long plantationId, [FromQuery] long? sectorId, [FromQuery] string? type, [FromQuery] string? status, [FromQuery] DateTime? from, [FromQuery] DateTime? to, CancellationToken t) { await EnsureRead(FieldActor.From(User), plantationId, t); return Ok((await queries.HandleAsync(new GetInterventionsByPlantationQuery(plantationId, sectorId, FieldAssemblers.ParseInterventionType(type), FieldAssemblers.ParseInterventionStatus(status), from, to), t)).Select(FieldAssemblers.ToResource)); }
+[HttpGet("v1/plantations/{plantationId:long}/interventions")] public async Task<IActionResult> ListLegacyInterventionsByPlantation(long plantationId, CancellationToken t) { await EnsureRead(FieldActor.From(User), plantationId, t); return Ok((await queries.HandleAsync(new GetInterventionsByPlantationQuery(plantationId, null, null, null, null, null), t)).Select(FieldAssemblers.ToLegacyResource)); }
+[HttpGet("v1/sectors/{sectorId:long}/interventions")] public async Task<IActionResult> ListInterventionsBySector(long sectorId, CancellationToken t) { var sector = await projections.FindSectorAsync(sectorId, t) ?? throw new KeyNotFoundException("Sector not found."); await EnsureRead(FieldActor.From(User), sector.PlantationId, t); return Ok((await queries.HandleAsync(new GetInterventionsBySectorQuery(sectorId), t)).Select(FieldAssemblers.ToLegacyResource)); }
+[HttpGet("v1/recommendations/{recommendationId:long}/interventions")] public async Task<IActionResult> ListInterventionsByRecommendation(long recommendationId, CancellationToken t) { var a = FieldActor.From(User); var items = await queries.HandleAsync(new GetInterventionsByRecommendationQuery(recommendationId), t); var result = new List<Domain.Model.Aggregates.AgronomicIntervention>(); foreach (var item in items) if (await authorization.CanReadPlantationAsync(a.Id, a.IsAdmin, a.IsAgronomist, a.IsGrower, item.PlantationId, t)) result.Add(item); return Ok(result.Select(FieldAssemblers.ToLegacyResource)); }
+[HttpPatch("v1/field/interventions/{id:long}/verify")] public async Task<IActionResult> VerifyIntervention(long id, ReviewInterventionResource r, CancellationToken t) { var a = FieldActor.From(User); if (!a.IsAdmin && r.agronomistId != a.Id) return Forbid(); return Ok(FieldAssemblers.ToResource(await commands.HandleAsync(new VerifyInterventionCommand(id, r.agronomistId, r.notes), t))); }
+[HttpPatch("v1/field/interventions/{id:long}/reject")] public async Task<IActionResult> RejectIntervention(long id, ReviewInterventionResource r, CancellationToken t) { var a = FieldActor.From(User); if (!a.IsAdmin && r.agronomistId != a.Id) return Forbid(); return Ok(FieldAssemblers.ToResource(await commands.HandleAsync(new RejectInterventionCommand(id, r.agronomistId, r.notes), t))); }
 }

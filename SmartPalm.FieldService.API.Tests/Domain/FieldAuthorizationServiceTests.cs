@@ -43,6 +43,19 @@ public class FieldAuthorizationServiceTests
         await service.EnsureFieldUserAccessAsync(1, 10, CancellationToken.None);
     }
 
+    [Theory]
+    [InlineData(99, true, false, false, false, true)]
+    [InlineData(1, false, true, false, true, true)]
+    [InlineData(1, false, true, false, false, false)]
+    [InlineData(1, false, false, true, false, true)]
+    [InlineData(2, false, false, true, false, false)]
+    public async Task ReadAccess_EnforcesRoleAndPlantation(long id, bool admin, bool agronomist, bool grower, bool affiliated, bool allowed)
+    {
+        var service = new FieldAuthorizationService(new ProjectionStub { Affiliated = affiliated }, new FieldAccessPolicy());
+        if (allowed) await service.EnsurePlantationReadAccessAsync(id, admin, agronomist, grower, 10, CancellationToken.None);
+        else await Assert.ThrowsAsync<UnauthorizedAccessException>(() => service.EnsurePlantationReadAccessAsync(id, admin, agronomist, grower, 10, CancellationToken.None));
+    }
+
     private sealed class ProjectionStub : IFieldProjectionRepository
     {
         public UserProjection? User { get; init; }
