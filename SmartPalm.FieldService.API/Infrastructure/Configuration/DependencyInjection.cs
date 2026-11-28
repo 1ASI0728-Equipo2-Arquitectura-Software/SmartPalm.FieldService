@@ -7,6 +7,7 @@ using SmartPalm.FieldService.Application.QueryServices;
 using SmartPalm.FieldService.Domain.Repositories;
 using SmartPalm.FieldService.Domain.Services;
 using SmartPalm.FieldService.Infrastructure.Configuration;
+using SmartPalm.FieldService.Infrastructure.ExternalServices;
 using SmartPalm.FieldService.Infrastructure.Messaging;
 using SmartPalm.FieldService.Infrastructure.Persistence;
 namespace SmartPalm.FieldService.Infrastructure;
@@ -20,6 +21,14 @@ public static class DependencyInjection
         services.AddScoped<IIntegrationEventWriter, IntegrationEventWriter>(); services.AddScoped<IInbox, Inbox>(); services.AddScoped<IntegrationEventHandlers>();
         services.AddScoped<FieldAuthorizationService>(); services.AddSingleton<FieldAccessPolicy>(); services.AddSingleton<InterventionTraceabilityService>();
         services.AddScoped<IFieldVisitCommandService, FieldVisitCommandService>(); services.AddScoped<IFieldVisitQueryService, FieldVisitQueryService>(); services.AddScoped<IFieldInspectionCommandService, FieldInspectionCommandService>(); services.AddScoped<IFieldInspectionQueryService, FieldInspectionQueryService>(); services.AddScoped<IInterventionCommandService, InterventionCommandService>(); services.AddScoped<IInterventionQueryService, InterventionQueryService>();
+        services.AddScoped<IReportDraftEvidenceRepository, ReportDraftEvidenceRepository>();
+        services.AddScoped<ReportDraftService>();
+        services.AddScoped<IReportDraftProvider, MiniMaxReportDraftProvider>();
+        services.AddHttpClient(MiniMaxReportDraftProvider.ClientName, client =>
+        {
+            client.Timeout = TimeSpan.FromSeconds(40);
+            client.MaxResponseContentBufferSize = 128 * 1024;
+        }).ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
         services.AddHostedService<IntegrationEventConsumer>(); services.AddHostedService<OutboxPublisher>(); return services;
     }
 }

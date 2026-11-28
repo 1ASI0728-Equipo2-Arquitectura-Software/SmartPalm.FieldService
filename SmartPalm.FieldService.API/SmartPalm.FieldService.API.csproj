@@ -9,4 +9,7 @@
     <PackageReference Include="Swashbuckle.AspNetCore" /><PackageReference Include="Swashbuckle.AspNetCore.Annotations" />
     <PackageReference Include="System.IdentityModel.Tokens.Jwt" />
   </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="Skills/visit-report-draft/SKILL.md" LogicalName="SmartPalm.FieldService.Skills.visit-report-draft.SKILL.md" />
+  </ItemGroup>
 </Project>

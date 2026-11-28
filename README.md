@@ -18,6 +18,7 @@ Field es la capa de seguimiento operativo que actúa después de monitorear un s
 El contrato actual de Field está versionado bajo `/api/v1/field`:
 
 - `/api/v1/field/visits` para la planificación y el ciclo de vida de visitas.
+- `POST /api/v1/field/visits/{visitId}/report-draft` (sin cuerpo), para que el agrónomo asignado y afiliado genere un borrador de IA a partir de una visita completada con observaciones. No guarda ni publica el informe.
 - `/api/v1/field/inspections` para inspecciones online y offline.
 - `/api/v1/field/interventions` para la representación actual de intervenciones, filtrado, verificación y rechazo.
 
@@ -32,6 +33,8 @@ dotnet run --project SmartPalm.FieldService.API
 ```
 
 API: `http://localhost:5107`; health: `/health/ready`. El perfil `messaging` levanta RabbitMQ para pruebas aisladas y el perfil `api` ejecuta también el servicio en Docker.
+
+Para habilitar el borrador, inyecta `MINIMAX_API_KEY` como secreto de ejecución de Field y, opcionalmente, `MINIMAX_MODEL` (por defecto, `MiniMax-M3.1-Flash`). Si falta la clave, el borrador responde `502`; las otras operaciones de Field siguen disponibles. MiniMax recibe hasta 30 observaciones de la visita con sus referencias de sector y fecha. No incluyas datos personales en las observaciones de la prueba.
 
 ## Validación
 
